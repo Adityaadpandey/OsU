@@ -1,300 +1,173 @@
 #include "lang.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "keyboard.h"
+#include "memory.h"
 #include "string.h"
 #include "vga.h"
 
-#define MAX_LINE 96
-#define MAX_PROG_LINES 64
+#define LANG_LINE 96
+#define STACK_MAX 128
 
-typedef struct {
-    int line_no;
-    char code[MAX_LINE];
-} prog_line_t;
+static int32_t stack[STACK_MAX];
+static int sp;
 
-static prog_line_t prog[MAX_PROG_LINES];
-static int prog_count;
-static int vars[26];
-
-typedef struct {
-    const char *s;
-    size_t i;
-} parser_t;
-
-static int is_digit(char c) { return c >= '0' && c <= '9'; }
-static int is_alpha(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
-
-static char upper(char c) {
-    if (c >= 'a' && c <= 'z') {
-        return (char)(c - 32);
+static int pop(int32_t *v) {
+    if (sp <= 0) {
+        return -1;
     }
-    return c;
+    *v = stack[--sp];
+    return 0;
 }
 
-static void skip_ws(parser_t *p) {
-    while (p->s[p->i] == ' ' || p->s[p->i] == '\t') {
-        p->i++;
+static int push(int32_t v) {
+    if (sp >= STACK_MAX) {
+        return -1;
     }
+    stack[sp++] = v;
+    return 0;
 }
 
-static int parse_expr(parser_t *p);
-
-static int parse_factor(parser_t *p) {
-    skip_ws(p);
-    char c = p->s[p->i];
-
-    if (c == '(') {
-        p->i++;
-        int v = parse_expr(p);
-        skip_ws(p);
-        if (p->s[p->i] == ')') {
-            p->i++;
-        }
-        return v;
+static int is_number(const char *s) {
+    if (*s == '-' || *s == '+') {
+        s++;
     }
-
-    if (is_alpha(c)) {
-        int idx = upper(c) - 'A';
-        p->i++;
-        if (idx >= 0 && idx < 26) {
-            return vars[idx];
-        }
+    if (*s == '\0') {
         return 0;
     }
-
-    int sign = 1;
-    if (c == '-') {
-        sign = -1;
-        p->i++;
-    }
-
-    int value = 0;
-    while (is_digit(p->s[p->i])) {
-        value = value * 10 + (p->s[p->i] - '0');
-        p->i++;
-    }
-    return value * sign;
-}
-
-static int parse_term(parser_t *p) {
-    int v = parse_factor(p);
-    while (1) {
-        skip_ws(p);
-        char op = p->s[p->i];
-        if (op != '*' && op != '/') {
-            break;
-        }
-        p->i++;
-        int rhs = parse_factor(p);
-        if (op == '*') {
-            v *= rhs;
-        } else {
-            if (rhs == 0) {
-                vga_puts("ERR: div by zero\n");
-                return 0;
-            }
-            v /= rhs;
-        }
-    }
-    return v;
-}
-
-static int parse_expr(parser_t *p) {
-    int v = parse_term(p);
-    while (1) {
-        skip_ws(p);
-        char op = p->s[p->i];
-        if (op != '+' && op != '-') {
-            break;
-        }
-        p->i++;
-        int rhs = parse_term(p);
-        if (op == '+') {
-            v += rhs;
-        } else {
-            v -= rhs;
-        }
-    }
-    return v;
-}
-
-static int starts_with_kw(const char *s, const char *kw) {
-    size_t i = 0;
-    while (kw[i]) {
-        if (upper(s[i]) != kw[i]) {
+    while (*s) {
+        if (*s < '0' || *s > '9') {
             return 0;
         }
-        i++;
+        s++;
     }
     return 1;
 }
 
-static void copy_line(char *dst, const char *src) {
-    size_t i = 0;
-    while (src[i] && i + 1 < MAX_LINE) {
-        dst[i] = src[i];
-        i++;
-    }
-    dst[i] = '\0';
-}
-
-static void add_program_line(int line_no, const char *code) {
-    int pos = 0;
-    while (pos < prog_count && prog[pos].line_no < line_no) {
-        pos++;
-    }
-
-    if (pos < prog_count && prog[pos].line_no == line_no) {
-        copy_line(prog[pos].code, code);
-        return;
-    }
-
-    if (prog_count >= MAX_PROG_LINES) {
-        vga_puts("ERR: program full\n");
-        return;
-    }
-
-    for (int i = prog_count; i > pos; i--) {
-        prog[i] = prog[i - 1];
-    }
-    prog[pos].line_no = line_no;
-    copy_line(prog[pos].code, code);
-    prog_count++;
-}
-
-static void exec_line(const char *line);
-
-static void cmd_run(void) {
-    for (int i = 0; i < prog_count; i++) {
-        exec_line(prog[i].code);
-    }
-}
-
-static void cmd_list(void) {
-    for (int i = 0; i < prog_count; i++) {
-        vga_print_dec((uint32_t)prog[i].line_no);
+static void print_stack(void) {
+    vga_puts("<");
+    vga_print_dec((uint32_t)sp);
+    vga_puts("> ");
+    for (int i = 0; i < sp; i++) {
+        vga_print_dec((uint32_t)stack[i]);
         vga_putc(' ');
-        vga_puts(prog[i].code);
-        vga_putc('\n');
     }
+    vga_putc('\n');
 }
 
-static void exec_line(const char *line) {
-    if (starts_with_kw(line, "PRINT")) {
-        const char *arg = line + 5;
-        while (*arg == ' ') {
-            arg++;
-        }
-        if (*arg == '"') {
-            arg++;
-            while (*arg && *arg != '"') {
-                vga_putc(*arg++);
-            }
-            vga_putc('\n');
-            return;
-        }
-        parser_t p = {arg, 0};
-        int result = parse_expr(&p);
-        vga_print_dec((uint32_t)result);
-        vga_putc('\n');
-        return;
+static char *next_tok(char **p) {
+    while (**p == ' ' || **p == '\t') {
+        (*p)++;
     }
-
-    if (starts_with_kw(line, "LET")) {
-        const char *arg = line + 3;
-        while (*arg == ' ') {
-            arg++;
-        }
-        if (!is_alpha(*arg)) {
-            vga_puts("ERR: LET var\n");
-            return;
-        }
-        int idx = upper(*arg) - 'A';
-        arg++;
-        while (*arg == ' ') {
-            arg++;
-        }
-        if (*arg != '=') {
-            vga_puts("ERR: expected =\n");
-            return;
-        }
-        arg++;
-        parser_t p = {arg, 0};
-        vars[idx] = parse_expr(&p);
-        return;
+    if (**p == '\0') {
+        return 0;
     }
-
-    if (starts_with_kw(line, "RUN")) {
-        cmd_run();
-        return;
+    char *start = *p;
+    while (**p && **p != ' ' && **p != '\t') {
+        (*p)++;
     }
-
-    if (starts_with_kw(line, "LIST")) {
-        cmd_list();
-        return;
+    if (**p) {
+        **p = '\0';
+        (*p)++;
     }
-
-    if (starts_with_kw(line, "NEW")) {
-        prog_count = 0;
-        for (int i = 0; i < 26; i++) {
-            vars[i] = 0;
-        }
-        vga_puts("OK\n");
-        return;
-    }
-
-    if (starts_with_kw(line, "VARS")) {
-        for (int i = 0; i < 26; i++) {
-            vga_putc((char)('A' + i));
-            vga_putc('=');
-            vga_print_dec((uint32_t)vars[i]);
-            vga_putc(' ');
-            if ((i % 6) == 5) {
-                vga_putc('\n');
-            }
-        }
-        vga_putc('\n');
-        return;
-    }
-
-    vga_puts("ERR: unknown\n");
+    return start;
 }
 
 void lang_repl(void) {
-    char line[MAX_LINE];
+    char line[LANG_LINE];
 
-    vga_puts("\nTiny BASIC subset\n");
-    vga_puts("PRINT, LET, RUN, LIST, NEW, VARS\n");
-    vga_puts("Type EXIT to return\n\n");
+    sp = 0;
+    vga_puts("\nTiny Forth (interim for MicroPython prep)\n");
+    vga_puts("Words: + - * / dup drop swap . .s mem clear words bye\n\n");
 
     while (1) {
-        vga_puts("BASIC> ");
+        vga_puts("forth> ");
         keyboard_readline(line, sizeof(line));
 
-        if (strcmp(line, "EXIT") == 0 || strcmp(line, "exit") == 0) {
-            vga_puts("Leaving BASIC\n");
-            return;
-        }
-
-        size_t i = 0;
-        int line_no = -1;
-        if (is_digit(line[0])) {
-            line_no = 0;
-            while (is_digit(line[i])) {
-                line_no = line_no * 10 + (line[i] - '0');
-                i++;
+        char *cur = line;
+        char *tok;
+        while ((tok = next_tok(&cur)) != 0) {
+            if (strcmp(tok, "bye") == 0 || strcmp(tok, "exit") == 0) {
+                vga_puts("Leaving forth\n");
+                return;
+            } else if (strcmp(tok, "+") == 0) {
+                int32_t a, b;
+                if (pop(&b) || pop(&a)) {
+                    vga_puts("stack underflow\n");
+                } else {
+                    push(a + b);
+                }
+            } else if (strcmp(tok, "-") == 0) {
+                int32_t a, b;
+                if (pop(&b) || pop(&a)) {
+                    vga_puts("stack underflow\n");
+                } else {
+                    push(a - b);
+                }
+            } else if (strcmp(tok, "*") == 0) {
+                int32_t a, b;
+                if (pop(&b) || pop(&a)) {
+                    vga_puts("stack underflow\n");
+                } else {
+                    push(a * b);
+                }
+            } else if (strcmp(tok, "/") == 0) {
+                int32_t a, b;
+                if (pop(&b) || pop(&a)) {
+                    vga_puts("stack underflow\n");
+                } else if (b == 0) {
+                    vga_puts("div by zero\n");
+                    push(a);
+                    push(b);
+                } else {
+                    push(a / b);
+                }
+            } else if (strcmp(tok, "dup") == 0) {
+                if (sp <= 0 || push(stack[sp - 1])) {
+                    vga_puts("stack error\n");
+                }
+            } else if (strcmp(tok, "drop") == 0) {
+                int32_t tmp;
+                if (pop(&tmp)) {
+                    vga_puts("stack underflow\n");
+                }
+            } else if (strcmp(tok, "swap") == 0) {
+                if (sp < 2) {
+                    vga_puts("stack underflow\n");
+                } else {
+                    int32_t t = stack[sp - 1];
+                    stack[sp - 1] = stack[sp - 2];
+                    stack[sp - 2] = t;
+                }
+            } else if (strcmp(tok, ".") == 0) {
+                int32_t v;
+                if (pop(&v)) {
+                    vga_puts("stack underflow\n");
+                } else {
+                    vga_print_dec((uint32_t)v);
+                    vga_putc('\n');
+                }
+            } else if (strcmp(tok, ".s") == 0) {
+                print_stack();
+            } else if (strcmp(tok, "mem") == 0) {
+                vga_puts("heap used: ");
+                vga_print_dec((uint32_t)memory_heap_used());
+                vga_puts(" bytes\n");
+            } else if (strcmp(tok, "clear") == 0) {
+                sp = 0;
+            } else if (strcmp(tok, "words") == 0) {
+                vga_puts("+ - * / dup drop swap . .s mem clear words bye\n");
+            } else if (is_number(tok)) {
+                if (push((int32_t)atoi(tok)) != 0) {
+                    vga_puts("stack full\n");
+                }
+            } else {
+                vga_puts("unknown word: ");
+                vga_puts(tok);
+                vga_putc('\n');
             }
-            while (line[i] == ' ') {
-                i++;
-            }
-        }
-
-        if (line_no >= 0) {
-            add_program_line(line_no, &line[i]);
-        } else {
-            exec_line(line);
         }
     }
 }

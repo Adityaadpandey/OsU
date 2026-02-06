@@ -1,7 +1,9 @@
 #include "idt.h"
 #include "keyboard.h"
+#include "disk.h"
 #include "memory.h"
 #include "shell.h"
+#include "vfs.h"
 #include "vga.h"
 
 void kmain(void) {
@@ -15,6 +17,8 @@ void kmain(void) {
     idt_init();
     keyboard_init();
     memory_init();
+    disk_init();
+    vfs_init();
 
     __asm__ volatile("sti");
 

@@ -151,3 +151,15 @@ void vga_printf(const char *fmt, ...) {
     }
     va_end(args);
 }
+
+void vga_set_cursor(uint8_t x, uint8_t y) {
+    if (x >= VGA_WIDTH) {
+        x = VGA_WIDTH - 1;
+    }
+    if (y >= VGA_HEIGHT) {
+        y = VGA_HEIGHT - 1;
+    }
+    cursor_x = x;
+    cursor_y = y;
+    update_cursor();
+}

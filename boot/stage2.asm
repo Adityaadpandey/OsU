@@ -6,8 +6,7 @@ KERNEL_LBA_START    equ 17
 KERNEL_SECTORS      equ 128
 KERNEL_LOAD_SEGMENT equ 0x1000
 KERNEL_LOAD_OFFSET  equ 0x0000
-SECTORS_PER_TRACK   equ 18
-HEADS_PER_CYL       equ 2
+KERNEL_CHUNK_SECTORS equ 64
 
 GDT_CODE_SELECTOR   equ 0x08
 GDT_DATA_SELECTOR   equ 0x10
@@ -52,40 +51,27 @@ load_kernel:
     mov si, msg_kernel
     call print_string
 
-    ; CHS fallback/read path for floppy-style images:
-    ; start at LBA 17 => C=0, H=0, S=18
     mov ax, KERNEL_LOAD_SEGMENT
     mov es, ax
-    mov bx, KERNEL_LOAD_OFFSET
-    mov si, KERNEL_SECTORS
-    mov ch, 0                  ; cylinder
-    mov dh, 0                  ; head
-    mov cl, 18                 ; sector (1-based)
+    mov word [dap_off], 0x0000
+    mov word [dap_seg], KERNEL_LOAD_SEGMENT
+    mov word [dap_count], KERNEL_CHUNK_SECTORS
+    mov dword [dap_lba], KERNEL_LBA_START
+    mov dword [dap_lba+4], 0
 
-.read_next:
-    mov ah, 0x02
-    mov al, 1
+    mov si, dap
+    mov ah, 0x42
     mov dl, [boot_drive]
     int 0x13
     jc .error
 
-    add bx, 512
-
-    dec si
-    jz .ok
-
-    inc cl
-    cmp cl, SECTORS_PER_TRACK + 1
-    jne .read_next
-
-    mov cl, 1
-    inc dh
-    cmp dh, HEADS_PER_CYL
-    jne .read_next
-
-    mov dh, 0
-    inc ch
-    jmp .read_next
+    mov word [dap_off], (KERNEL_CHUNK_SECTORS * 512)
+    mov dword [dap_lba], (KERNEL_LBA_START + KERNEL_CHUNK_SECTORS)
+    mov si, dap
+    mov ah, 0x42
+    mov dl, [boot_drive]
+    int 0x13
+    jc .error
 
 .ok:
     mov si, msg_done
@@ -131,6 +117,18 @@ gdt_end:
 gdt_descriptor:
     dw gdt_end - gdt_start - 1
     dd gdt_start
+
+dap:
+    db 0x10
+    db 0
+dap_count:
+    dw 0
+dap_off:
+    dw 0
+dap_seg:
+    dw 0
+dap_lba:
+    dq 0
 
 boot_drive: db 0
 

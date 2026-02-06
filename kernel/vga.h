@@ -34,5 +34,6 @@ void vga_puts(const char *str);
 void vga_print_dec(uint32_t value);
 void vga_print_hex(uint32_t value);
 void vga_printf(const char *fmt, ...);
+void vga_set_cursor(uint8_t x, uint8_t y);
 
 #endif

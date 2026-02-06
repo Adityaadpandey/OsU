@@ -17,7 +17,7 @@ KERNEL_DIR = kernel
 
 STAGE2_SECTORS = 16
 KERNEL_SECTORS = 128
-IMG_SECTORS = 2880
+IMG_SECTORS = 32768
 
 KERNEL_ASM = $(KERNEL_DIR)/entry.asm $(KERNEL_DIR)/isr.asm
 KERNEL_C = $(wildcard $(KERNEL_DIR)/*.c)
@@ -71,7 +71,7 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.c
 	$(KCC) $(CFLAGS) -c $< -o $@
 
 run: check-toolchain $(BUILD_DIR)/os.img
-	$(QEMU) -drive format=raw,file=$(BUILD_DIR)/os.img,if=floppy -boot a
+	$(QEMU) -drive format=raw,file=$(BUILD_DIR)/os.img,if=ide,index=0,media=disk -boot c
 
 clean:
 	rm -rf $(BUILD_DIR)

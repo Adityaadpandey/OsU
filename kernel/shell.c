@@ -2,34 +2,98 @@
 
 #include <stdint.h>
 
+#include "editor.h"
+#include "io.h"
 #include "keyboard.h"
 #include "lang.h"
 #include "memory.h"
-#include "io.h"
 #include "string.h"
+#include "vfs.h"
 #include "vga.h"
 
-#define SHELL_LINE_MAX 128
+#define SHELL_LINE_MAX 192
+#define HISTORY_MAX 16
 
-static int starts_with(const char *s, const char *prefix) {
-    while (*prefix) {
-        if (*s != *prefix) {
-            return 0;
-        }
-        s++;
-        prefix++;
+static char history[HISTORY_MAX][SHELL_LINE_MAX];
+static size_t history_count;
+
+static void save_history(const char *line) {
+    if (line[0] == '\0') {
+        return;
     }
+    if (history_count < HISTORY_MAX) {
+        strcpy(history[history_count++], line);
+        return;
+    }
+    for (size_t i = 1; i < HISTORY_MAX; i++) {
+        strcpy(history[i - 1], history[i]);
+    }
+    strcpy(history[HISTORY_MAX - 1], line);
+}
+
+static const char *skip_ws(const char *s) {
+    while (*s == ' ' || *s == '\t') {
+        s++;
+    }
+    return s;
+}
+
+static int split_cmd(char *line, char **cmd, char **args) {
+    char *p = line;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p == '\0') {
+        return 0;
+    }
+
+    *cmd = p;
+    while (*p && *p != ' ' && *p != '\t') {
+        p++;
+    }
+    if (*p == '\0') {
+        *args = p;
+        return 1;
+    }
+    *p++ = '\0';
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    *args = p;
     return 1;
+}
+
+static void split_first_arg(char *args, char **a0, char **rest) {
+    args = (char *)skip_ws(args);
+    *a0 = args;
+    while (*args && *args != ' ' && *args != '\t') {
+        args++;
+    }
+    if (*args == '\0') {
+        *rest = args;
+        return;
+    }
+    *args++ = '\0';
+    *rest = (char *)skip_ws(args);
 }
 
 static void cmd_help(void) {
     vga_puts("Commands:\n");
-    vga_puts("  help      show commands\n");
-    vga_puts("  clear     clear screen\n");
-    vga_puts("  echo X    print text\n");
-    vga_puts("  mem       heap stats\n");
-    vga_puts("  lang      tiny BASIC REPL\n");
-    vga_puts("  reboot    reboot machine\n");
+    vga_puts("  help                show commands\n");
+    vga_puts("  clear               clear screen\n");
+    vga_puts("  echo TEXT           print text\n");
+    vga_puts("  mem                 heap stats\n");
+    vga_puts("  history             command history\n");
+    vga_puts("  lang                forth REPL\n");
+    vga_puts("  python              micropython bootstrap status\n");
+    vga_puts("  ls                  list files\n");
+    vga_puts("  cat FILE            print file\n");
+    vga_puts("  touch FILE          create file\n");
+    vga_puts("  rm FILE             remove file\n");
+    vga_puts("  write FILE TEXT     overwrite file\n");
+    vga_puts("  append FILE TEXT    append to file\n");
+    vga_puts("  edit FILE           vim-like editor\n");
+    vga_puts("  reboot              reboot machine\n");
 }
 
 static void cmd_mem(void) {
@@ -50,6 +114,110 @@ static void cmd_mem(void) {
     vga_puts(" bytes\n");
 }
 
+static void cmd_history(void) {
+    for (size_t i = 0; i < history_count; i++) {
+        vga_print_dec((uint32_t)i);
+        vga_puts(": ");
+        vga_puts(history[i]);
+        vga_putc('\n');
+    }
+}
+
+static void cmd_ls(void) {
+    const char *name;
+    size_t len;
+    size_t i = 0;
+
+    while (vfs_list_entry(i, &name, &len)) {
+        vga_puts(name);
+        vga_puts("  ");
+        vga_print_dec((uint32_t)len);
+        vga_puts("b\n");
+        i++;
+    }
+    if (i == 0) {
+        vga_puts("(empty)\n");
+    }
+}
+
+static void cmd_cat(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: cat FILE\n");
+        return;
+    }
+    size_t len;
+    const char *data = vfs_read_ptr(args, &len);
+    if (!data) {
+        vga_puts("file not found\n");
+        return;
+    }
+    vga_puts(data);
+    if (len == 0 || data[len - 1] != '\n') {
+        vga_putc('\n');
+    }
+}
+
+static void cmd_touch(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: touch FILE\n");
+        return;
+    }
+    int r = vfs_touch(args);
+    if (r == 0) {
+        vga_puts("ok\n");
+    } else {
+        vga_puts("touch failed\n");
+    }
+}
+
+static void cmd_rm(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: rm FILE\n");
+        return;
+    }
+    if (vfs_remove(args) == 0) {
+        vga_puts("ok\n");
+    } else {
+        vga_puts("file not found\n");
+    }
+}
+
+static void cmd_write_common(char *args, int append) {
+    char *name;
+    char *text;
+
+    if (*args == '\0') {
+        vga_puts(append ? "usage: append FILE TEXT\n" : "usage: write FILE TEXT\n");
+        return;
+    }
+
+    split_first_arg(args, &name, &text);
+    if (*name == '\0' || *text == '\0') {
+        vga_puts(append ? "usage: append FILE TEXT\n" : "usage: write FILE TEXT\n");
+        return;
+    }
+
+    int r = append ? vfs_append(name, text) : vfs_write(name, text);
+    if (r == 0) {
+        vga_puts("ok\n");
+    } else {
+        vga_puts("write failed\n");
+    }
+}
+
+static void cmd_edit(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: edit FILE\n");
+        return;
+    }
+    if (vfs_touch(args) != 0) {
+        vga_puts("cannot open file\n");
+        return;
+    }
+    editor_edit_file(args);
+    vga_clear();
+}
+
 static void cmd_reboot(void) {
     vga_puts("Rebooting...\n");
     __asm__ volatile("cli");
@@ -61,30 +229,73 @@ static void cmd_reboot(void) {
     }
 }
 
+static void cmd_python(void) {
+    vga_puts("MicroPython status:\n");
+    vga_puts("  runtime: not embedded yet\n");
+    vga_puts("  storage: FAT16 ready via VFS\n");
+    vga_puts("  next: port mp_hal + gc + file bindings\n");
+}
+
 void shell_run(void) {
     char line[SHELL_LINE_MAX];
 
     vga_puts("Type 'help' for commands.\n");
     for (;;) {
-        vga_puts("u> ");
+        vga_puts("mini> ");
         keyboard_readline(line, sizeof(line));
 
         if (line[0] == '\0') {
             continue;
         }
 
-        if (strcmp(line, "help") == 0) {
-            cmd_help();
-        } else if (strcmp(line, "clear") == 0) {
-            vga_clear();
-        } else if (starts_with(line, "echo ")) {
-            vga_puts(line + 5);
+        if (strcmp(line, "!!") == 0) {
+            if (history_count == 0) {
+                vga_puts("no history\n");
+                continue;
+            }
+            strcpy(line, history[history_count - 1]);
+            vga_puts(line);
             vga_putc('\n');
-        } else if (strcmp(line, "mem") == 0) {
+        }
+
+        save_history(line);
+
+        char *cmd;
+        char *args;
+        if (!split_cmd(line, &cmd, &args)) {
+            continue;
+        }
+
+        if (strcmp(cmd, "help") == 0) {
+            cmd_help();
+        } else if (strcmp(cmd, "clear") == 0) {
+            vga_clear();
+        } else if (strcmp(cmd, "echo") == 0) {
+            vga_puts(args);
+            vga_putc('\n');
+        } else if (strcmp(cmd, "mem") == 0) {
             cmd_mem();
-        } else if (strcmp(line, "lang") == 0) {
+        } else if (strcmp(cmd, "history") == 0) {
+            cmd_history();
+        } else if (strcmp(cmd, "lang") == 0) {
             lang_repl();
-        } else if (strcmp(line, "reboot") == 0) {
+        } else if (strcmp(cmd, "python") == 0) {
+            cmd_python();
+        } else if (strcmp(cmd, "ls") == 0) {
+            cmd_ls();
+        } else if (strcmp(cmd, "cat") == 0) {
+            cmd_cat(args);
+        } else if (strcmp(cmd, "touch") == 0) {
+            cmd_touch(args);
+        } else if (strcmp(cmd, "rm") == 0) {
+            cmd_rm(args);
+        } else if (strcmp(cmd, "write") == 0) {
+            cmd_write_common(args, 0);
+        } else if (strcmp(cmd, "append") == 0) {
+            cmd_write_common(args, 1);
+        } else if (strcmp(cmd, "edit") == 0) {
+            cmd_edit(args);
+        } else if (strcmp(cmd, "reboot") == 0) {
             cmd_reboot();
         } else {
             vga_puts("Unknown command. Try 'help'.\n");
