@@ -134,7 +134,7 @@ gdt_descriptor:
 
 boot_drive: db 0
 
-msg_stage2: db "MiniOS Stage2", 13, 10, 0
+msg_stage2: db "OsU Stage2", 13, 10, 0
 msg_kernel: db "Loading kernel...", 13, 10, 0
 msg_done: db "done", 13, 10, 0
 msg_error: db "kernel load failed", 13, 10, 0

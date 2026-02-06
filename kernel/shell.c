@@ -66,7 +66,7 @@ void shell_run(void) {
 
     vga_puts("Type 'help' for commands.\n");
     for (;;) {
-        vga_puts("mini> ");
+        vga_puts("u> ");
         keyboard_readline(line, sizeof(line));
 
         if (line[0] == '\0') {

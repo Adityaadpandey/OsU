@@ -62,7 +62,7 @@ hang:
     jmp hang
 
 boot_drive: db 0
-msg_boot: db "MiniOS MBR", 13, 10, 0
+msg_boot: db "OsU MBR", 13, 10, 0
 msg_disk_error: db "Disk read error", 13, 10, 0
 msg_stage2_error: db "Stage2 invalid", 13, 10, 0
 
