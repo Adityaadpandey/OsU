@@ -436,7 +436,7 @@ int fs_touch(const char *name) {
     }
 
     int free_idx = -1;
-    int idx = find_entry(name, &free_idx);
+    int idx = find_entry_in_current(name, &free_idx);
     if (idx >= 0) {
         return 0;
     }
@@ -446,7 +446,8 @@ int fs_touch(const char *name) {
 
     char f11[11];
     fat_name_from_input(name, f11);
-    fat_dir_entry_t *ent = root_entries();
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return -1;
 
     memset(&ent[free_idx], 0, sizeof(fat_dir_entry_t));
     memcpy(ent[free_idx].name, f11, 8);
@@ -455,7 +456,7 @@ int fs_touch(const char *name) {
     ent[free_idx].fst_clus_lo = 0;
     ent[free_idx].file_size = 0;
 
-    return flush_root();
+    return flush_current_dir();
 }
 
 int fs_remove(const char *name) {
@@ -496,8 +497,9 @@ int fs_write_raw(const char *name, const char *data, size_t len) {
     }
 
     int free_idx = -1;
-    int idx = find_entry(name, &free_idx);
-    fat_dir_entry_t *ent = root_entries();
+    int idx = find_entry_in_current(name, &free_idx);
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return -1;
 
     if (idx < 0) {
         if (free_idx < 0) {
@@ -529,7 +531,7 @@ int fs_write_raw(const char *name, const char *data, size_t len) {
     if (flush_fat() != 0) {
         return -4;
     }
-    if (flush_root() != 0) {
+    if (flush_current_dir() != 0) {
         return -4;
     }
 
@@ -568,12 +570,14 @@ const char *fs_read_ptr(const char *name, size_t *len) {
         return 0;
     }
 
-    int idx = find_entry(name, 0);
+    int idx = find_entry_in_current(name, 0);
     if (idx < 0) {
         return 0;
     }
 
-    fat_dir_entry_t *ent = root_entries();
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return 0;
+
     uint32_t size = ent[idx].file_size;
     uint16_t first = ent[idx].fst_clus_lo;
 
@@ -601,16 +605,23 @@ int fs_list_entry(size_t index, const char **name, size_t *len) {
         return 0;
     }
 
-    fat_dir_entry_t *ent = root_entries();
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return 0;
+
     size_t seen = 0;
     static char printable[FS_MAX_NAME + 1];
+    int max_entries = (current_dir_cluster == 0) ? FS_MAX_FILES : 16;
 
-    for (size_t i = 0; i < FS_MAX_FILES; i++) {
+    for (int i = 0; i < max_entries; i++) {
         uint8_t lead = (uint8_t)ent[i].name[0];
         if (lead == 0x00) {
             break;
         }
         if (lead == 0xE5 || ent[i].attr == 0x0F) {
+            continue;
+        }
+        /* Skip . and .. entries */
+        if (ent[i].name[0] == '.' && (ent[i].name[1] == ' ' || ent[i].name[1] == '.')) {
             continue;
         }
 
