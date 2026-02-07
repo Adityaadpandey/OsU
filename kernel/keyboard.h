@@ -17,5 +17,6 @@
 void keyboard_init(void);
 char keyboard_getchar(void);
 void keyboard_readline(char *buf, size_t max_len);
+void keyboard_flush(void);
 
 #endif

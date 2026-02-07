@@ -149,6 +149,9 @@ int editor_edit_file(const char *name) {
     char colon[16];
     const char *msg = "i insert | h/j/k/l move | :w :q :wq | Ctrl+S save";
 
+    /* Flush any leftover keyboard input from previous session */
+    keyboard_flush();
+
     size_t len = 0;
     const char *src = vfs_read_ptr(name, &len);
     if (!src) {

@@ -128,13 +128,24 @@ void keyboard_init(void) {
     kbd_head = 0;
     kbd_tail = 0;
     shift_down = 0;
+    extended_key = 0;
     idt_register_handler(33, keyboard_irq_handler);
+}
+
+/* Flush any pending keyboard input */
+void keyboard_flush(void) {
+    kbd_head = 0;
+    kbd_tail = 0;
+    extended_key = 0;
 }
 
 char keyboard_getchar(void) {
     char c;
     while (!dequeue_char(&c)) {
-        __asm__ volatile("hlt");
+        /* Enable interrupts and halt atomically to avoid race condition.
+         * Without sti before hlt, an interrupt could arrive after we check
+         * the buffer but before we halt, causing us to sleep forever. */
+        __asm__ volatile("sti; hlt");
     }
     return c;
 }
