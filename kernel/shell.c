@@ -85,7 +85,9 @@ static void cmd_help(void) {
     vga_puts("  mem                 heap stats\n");
     vga_puts("  history             command history\n");
     vga_puts("  lang                forth REPL\n");
-    vga_puts("  python              micropython bootstrap status\n");
+    vga_puts("  python              CosyPy REPL\n");
+    vga_puts("  run FILE.sh         run shell script\n");
+    vga_puts("  pyrun FILE.py       run CosyPy script\n");
     vga_puts("  ls                  list files\n");
     vga_puts("  cat FILE            print file\n");
     vga_puts("  touch FILE          create file\n");
@@ -93,6 +95,10 @@ static void cmd_help(void) {
     vga_puts("  write FILE TEXT     overwrite file\n");
     vga_puts("  append FILE TEXT    append to file\n");
     vga_puts("  edit FILE           vim-like editor\n");
+    vga_puts("  pwd                 print working directory\n");
+    vga_puts("  cd DIR              change directory\n");
+    vga_puts("  mkdir DIR           create directory\n");
+    vga_puts("  rmdir DIR           remove empty directory\n");
     vga_puts("  reboot              reboot machine\n");
 }
 
@@ -126,17 +132,64 @@ static void cmd_history(void) {
 static void cmd_ls(void) {
     const char *name;
     size_t len;
+    int is_dir;
     size_t i = 0;
 
-    while (vfs_list_entry(i, &name, &len)) {
+    while (vfs_list_dir_entry(i, &name, &len, &is_dir)) {
         vga_puts(name);
-        vga_puts("  ");
-        vga_print_dec((uint32_t)len);
-        vga_puts("b\n");
+        if (is_dir) {
+            vga_puts("  <DIR>\n");
+        } else {
+            vga_puts("  ");
+            vga_print_dec((uint32_t)len);
+            vga_puts("b\n");
+        }
         i++;
     }
     if (i == 0) {
         vga_puts("(empty)\n");
+    }
+}
+
+static void cmd_pwd(void) {
+    vga_puts(vfs_getcwd());
+    vga_putc('\n');
+}
+
+static void cmd_cd(char *args) {
+    if (*args == '\0') {
+        vfs_chdir("/");
+        return;
+    }
+    if (vfs_chdir(args) != 0) {
+        vga_puts("directory not found\n");
+    }
+}
+
+static void cmd_mkdir(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: mkdir DIR\n");
+        return;
+    }
+    if (vfs_mkdir(args) == 0) {
+        vga_puts("ok\n");
+    } else {
+        vga_puts("mkdir failed\n");
+    }
+}
+
+static void cmd_rmdir(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: rmdir DIR\n");
+        return;
+    }
+    int r = vfs_rmdir(args);
+    if (r == 0) {
+        vga_puts("ok\n");
+    } else if (r == -4) {
+        vga_puts("directory not empty\n");
+    } else {
+        vga_puts("rmdir failed\n");
     }
 }
 
@@ -229,11 +282,33 @@ static void cmd_reboot(void) {
     }
 }
 
+/* Forward declarations for script and CosyPy - will be implemented in separate files */
+extern void cospy_repl(void);
+extern int cospy_run_file(const char *filename);
+extern int script_run(const char *filename);
+
 static void cmd_python(void) {
-    vga_puts("MicroPython status:\n");
-    vga_puts("  runtime: not embedded yet\n");
-    vga_puts("  storage: FAT16 ready via VFS\n");
-    vga_puts("  next: port mp_hal + gc + file bindings\n");
+    cospy_repl();
+}
+
+static void cmd_run(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: run FILE.sh\n");
+        return;
+    }
+    if (script_run(args) != 0) {
+        vga_puts("script error\n");
+    }
+}
+
+static void cmd_pyrun(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: pyrun FILE.py\n");
+        return;
+    }
+    if (cospy_run_file(args) != 0) {
+        vga_puts("script error\n");
+    }
 }
 
 void shell_run(void) {
@@ -241,7 +316,9 @@ void shell_run(void) {
 
     vga_puts("Type 'help' for commands.\n");
     for (;;) {
-        vga_puts("mini> ");
+        /* Show current directory in prompt */
+        vga_puts(vfs_getcwd());
+        vga_puts("> ");
         keyboard_readline(line, sizeof(line));
 
         if (line[0] == '\0') {
@@ -295,6 +372,18 @@ void shell_run(void) {
             cmd_write_common(args, 1);
         } else if (strcmp(cmd, "edit") == 0) {
             cmd_edit(args);
+        } else if (strcmp(cmd, "pwd") == 0) {
+            cmd_pwd();
+        } else if (strcmp(cmd, "cd") == 0) {
+            cmd_cd(args);
+        } else if (strcmp(cmd, "mkdir") == 0) {
+            cmd_mkdir(args);
+        } else if (strcmp(cmd, "rmdir") == 0) {
+            cmd_rmdir(args);
+        } else if (strcmp(cmd, "run") == 0) {
+            cmd_run(args);
+        } else if (strcmp(cmd, "pyrun") == 0) {
+            cmd_pyrun(args);
         } else if (strcmp(cmd, "reboot") == 0) {
             cmd_reboot();
         } else {

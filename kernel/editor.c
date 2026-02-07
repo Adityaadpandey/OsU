@@ -86,15 +86,24 @@ static int read_colon_cmd(char *cmd, size_t cap) {
 
     while (1) {
         char c = keyboard_getchar();
-        if (c == '\r') {
+
+        /* Skip null characters */
+        if (c == 0) {
             continue;
         }
+
+        /* Handle Enter key - both '\n' and '\r' should work */
         if (c == '\n' || c == '\r') {
             cmd[i] = '\0';
             while (i > 0 && cmd[i - 1] == ' ') {
                 cmd[--i] = '\0';
             }
             return 0;
+        }
+        /* Handle Escape - cancel command */
+        if (c == 27) {
+            cmd[0] = '\0';
+            return -1;
         }
         if (c == '\b') {
             if (i > 0) {
@@ -240,7 +249,10 @@ int editor_edit_file(const char *name) {
                 cursor = prev_start + (col < prev_len ? col : prev_len);
             }
         } else if (c == ':') {
-            read_colon_cmd(colon, sizeof(colon));
+            if (read_colon_cmd(colon, sizeof(colon)) < 0 || colon[0] == '\0') {
+                /* User cancelled with Escape or empty command */
+                continue;
+            }
             if (strcmp(colon, "w") == 0) {
                 if (vfs_write_raw(name, text, len) == 0) {
                     dirty = 0;

@@ -72,6 +72,11 @@ static uint8_t root_buf[ROOT_EU_SIZE];
 static char read_cache[FS_MAX_FILE_SIZE + 1];
 static int fs_ready;
 
+/* Current directory tracking */
+static uint16_t current_dir_cluster; /* 0 = root directory */
+static char current_path[FS_MAX_PATH];
+static uint8_t dir_buf[512]; /* Buffer for reading subdirectory clusters */
+
 static uint32_t root_lba(void) {
     return FAT_LBA_START + FAT_RESERVED_SECTORS + (FAT_FAT_COUNT * FAT_SECTORS_PER_FAT);
 }
@@ -260,6 +265,11 @@ static int valid_name(const char *name) {
 static fat_dir_entry_t *root_entries(void) {
     return (fat_dir_entry_t *)root_buf;
 }
+
+/* Forward declarations for directory functions */
+static fat_dir_entry_t *current_dir_entries(void);
+static int find_entry_in_current(const char *name, int *free_idx);
+static int flush_current_dir(void);
 
 static int find_entry(const char *name, int *free_idx) {
     char f11[11];
@@ -453,12 +463,14 @@ int fs_remove(const char *name) {
         return -1;
     }
 
-    int idx = find_entry(name, 0);
+    int idx = find_entry_in_current(name, 0);
     if (idx < 0) {
         return -1;
     }
 
-    fat_dir_entry_t *ent = root_entries();
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return -1;
+
     uint16_t first = ent[idx].fst_clus_lo;
     if (first >= FAT_CLUSTER_MIN) {
         free_chain(first);
@@ -471,7 +483,7 @@ int fs_remove(const char *name) {
     if (flush_fat() != 0) {
         return -2;
     }
-    if (flush_root() != 0) {
+    if (flush_current_dir() != 0) {
         return -2;
     }
 
@@ -609,6 +621,318 @@ int fs_list_entry(size_t index, const char **name, size_t *len) {
             }
             if (len) {
                 *len = ent[i].file_size;
+            }
+            return 1;
+        }
+        seen++;
+    }
+
+    return 0;
+}
+
+/* ==================== Directory Operations ==================== */
+
+/* Get directory entries from current directory */
+static fat_dir_entry_t *current_dir_entries(void) {
+    if (current_dir_cluster == 0) {
+        return (fat_dir_entry_t *)root_buf;
+    }
+    /* Load subdirectory cluster into dir_buf */
+    if (disk_read_sectors(cluster_lba(current_dir_cluster), 1, dir_buf) != 0) {
+        return 0;
+    }
+    return (fat_dir_entry_t *)dir_buf;
+}
+
+/* Find entry in current directory */
+static int find_entry_in_current(const char *name, int *free_idx) {
+    char f11[11];
+    if (fat_name_from_input(name, f11) != 0) {
+        return -1;
+    }
+
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return -1;
+
+    int first_free = -1;
+    int max_entries = (current_dir_cluster == 0) ? FS_MAX_FILES : 16; /* 512/32 = 16 entries per cluster */
+
+    for (int i = 0; i < max_entries; i++) {
+        uint8_t lead = (uint8_t)ent[i].name[0];
+        if (lead == 0x00 || lead == 0xE5) {
+            if (first_free < 0) {
+                first_free = i;
+            }
+            if (lead == 0x00) {
+                break;
+            }
+            continue;
+        }
+        if (ent[i].attr == 0x0F) {
+            continue;
+        }
+        if (memcmp(ent[i].name, f11, 8) == 0 && memcmp(ent[i].ext, f11 + 8, 3) == 0) {
+            if (free_idx) {
+                *free_idx = first_free;
+            }
+            return i;
+        }
+    }
+
+    if (free_idx) {
+        *free_idx = first_free;
+    }
+    return -1;
+}
+
+/* Flush current directory to disk */
+static int flush_current_dir(void) {
+    if (current_dir_cluster == 0) {
+        return flush_root();
+    }
+    return disk_write_sectors(cluster_lba(current_dir_cluster), 1, dir_buf);
+}
+
+int fs_mkdir(const char *name) {
+    if (!fs_ready || !valid_name(name)) {
+        return -1;
+    }
+
+    /* Check if already exists */
+    int free_idx = -1;
+    int idx = find_entry_in_current(name, &free_idx);
+    if (idx >= 0) {
+        return -1; /* Already exists */
+    }
+    if (free_idx < 0) {
+        return -2; /* No space */
+    }
+
+    /* Allocate cluster for directory contents */
+    uint16_t dir_cluster = alloc_cluster();
+    if (dir_cluster == 0) {
+        return -3;
+    }
+
+    /* Initialize directory cluster with . and .. entries */
+    uint8_t new_dir[512];
+    memset(new_dir, 0, sizeof(new_dir));
+    fat_dir_entry_t *dot = (fat_dir_entry_t *)new_dir;
+    fat_dir_entry_t *dotdot = (fat_dir_entry_t *)(new_dir + 32);
+
+    /* . entry points to self */
+    memcpy(dot->name, ".       ", 8);
+    memcpy(dot->ext, "   ", 3);
+    dot->attr = FS_ATTR_DIRECTORY;
+    dot->fst_clus_lo = dir_cluster;
+
+    /* .. entry points to parent */
+    memcpy(dotdot->name, "..      ", 8);
+    memcpy(dotdot->ext, "   ", 3);
+    dotdot->attr = FS_ATTR_DIRECTORY;
+    dotdot->fst_clus_lo = current_dir_cluster;
+
+    if (disk_write_sectors(cluster_lba(dir_cluster), 1, new_dir) != 0) {
+        free_chain(dir_cluster);
+        return -4;
+    }
+
+    /* Create directory entry in current directory */
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return -5;
+
+    char f11[11];
+    fat_name_from_input(name, f11);
+    memset(&ent[free_idx], 0, sizeof(fat_dir_entry_t));
+    memcpy(ent[free_idx].name, f11, 8);
+    memcpy(ent[free_idx].ext, f11 + 8, 3);
+    ent[free_idx].attr = FS_ATTR_DIRECTORY;
+    ent[free_idx].fst_clus_lo = dir_cluster;
+    ent[free_idx].file_size = 0;
+
+    if (flush_fat() != 0) return -6;
+    if (flush_current_dir() != 0) return -6;
+
+    return 0;
+}
+
+int fs_rmdir(const char *name) {
+    if (!fs_ready) {
+        return -1;
+    }
+
+    /* Find directory entry */
+    int idx = find_entry_in_current(name, 0);
+    if (idx < 0) {
+        return -1;
+    }
+
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return -1;
+
+    /* Must be a directory */
+    if (!(ent[idx].attr & FS_ATTR_DIRECTORY)) {
+        return -2;
+    }
+
+    uint16_t dir_cluster = ent[idx].fst_clus_lo;
+
+    /* Check if directory is empty (only . and .. entries) */
+    uint8_t check_buf[512];
+    if (disk_read_sectors(cluster_lba(dir_cluster), 1, check_buf) != 0) {
+        return -3;
+    }
+
+    fat_dir_entry_t *dir_ent = (fat_dir_entry_t *)check_buf;
+    for (int i = 2; i < 16; i++) { /* Skip . and .. */
+        uint8_t lead = (uint8_t)dir_ent[i].name[0];
+        if (lead == 0x00) break;
+        if (lead != 0xE5) {
+            return -4; /* Not empty */
+        }
+    }
+
+    /* Free directory cluster */
+    free_chain(dir_cluster);
+
+    /* Mark entry as deleted */
+    ent[idx].name[0] = (char)0xE5;
+    ent[idx].fst_clus_lo = 0;
+
+    if (flush_fat() != 0) return -5;
+    if (flush_current_dir() != 0) return -5;
+
+    return 0;
+}
+
+int fs_chdir(const char *path) {
+    if (!fs_ready || !path) {
+        return -1;
+    }
+
+    /* Handle absolute path */
+    if (path[0] == '/') {
+        current_dir_cluster = 0;
+        current_path[0] = '/';
+        current_path[1] = '\0';
+        path++;
+        if (*path == '\0') return 0;
+    }
+
+    /* Handle .. */
+    if (strcmp(path, "..") == 0) {
+        if (current_dir_cluster == 0) {
+            return 0; /* Already at root */
+        }
+
+        /* Read current directory to get .. entry */
+        fat_dir_entry_t *ent = current_dir_entries();
+        if (!ent) return -2;
+
+        /* Second entry is .. */
+        current_dir_cluster = ent[1].fst_clus_lo;
+
+        /* Update path - remove last component */
+        char *last_slash = current_path;
+        for (char *p = current_path; *p; p++) {
+            if (*p == '/') last_slash = p;
+        }
+        if (last_slash == current_path) {
+            current_path[1] = '\0'; /* Back to root */
+        } else {
+            *last_slash = '\0';
+        }
+        return 0;
+    }
+
+    /* Find directory in current directory */
+    int idx = find_entry_in_current(path, 0);
+    if (idx < 0) {
+        return -3;
+    }
+
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return -4;
+
+    if (!(ent[idx].attr & FS_ATTR_DIRECTORY)) {
+        return -5; /* Not a directory */
+    }
+
+    /* Change to new directory */
+    current_dir_cluster = ent[idx].fst_clus_lo;
+
+    /* Update path */
+    size_t plen = strlen(current_path);
+    if (plen > 1 && plen < FS_MAX_PATH - 1) {
+        current_path[plen++] = '/';
+    }
+
+    char printable[FS_MAX_NAME + 1];
+    fat_name_to_printable(&ent[idx], printable);
+
+    size_t nlen = strlen(printable);
+    if (plen + nlen < FS_MAX_PATH) {
+        strcpy(current_path + plen, printable);
+    }
+
+    return 0;
+}
+
+const char *fs_getcwd(void) {
+    if (current_path[0] == '\0') {
+        current_path[0] = '/';
+        current_path[1] = '\0';
+    }
+    return current_path;
+}
+
+int fs_is_dir(const char *name) {
+    if (!fs_ready) return 0;
+
+    int idx = find_entry_in_current(name, 0);
+    if (idx < 0) return 0;
+
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return 0;
+
+    return (ent[idx].attr & FS_ATTR_DIRECTORY) ? 1 : 0;
+}
+
+int fs_list_dir_entry(size_t index, const char **name, size_t *len, int *is_dir) {
+    if (!fs_ready) {
+        return 0;
+    }
+
+    fat_dir_entry_t *ent = current_dir_entries();
+    if (!ent) return 0;
+
+    size_t seen = 0;
+    static char printable[FS_MAX_NAME + 1];
+    int max_entries = (current_dir_cluster == 0) ? FS_MAX_FILES : 16;
+
+    for (size_t i = 0; i < (size_t)max_entries; i++) {
+        uint8_t lead = (uint8_t)ent[i].name[0];
+        if (lead == 0x00) {
+            break;
+        }
+        if (lead == 0xE5 || ent[i].attr == 0x0F) {
+            continue;
+        }
+        /* Skip . and .. in listing */
+        if (ent[i].name[0] == '.') {
+            continue;
+        }
+
+        if (seen == index) {
+            fat_name_to_printable(&ent[i], printable);
+            if (name) {
+                *name = printable;
+            }
+            if (len) {
+                *len = ent[i].file_size;
+            }
+            if (is_dir) {
+                *is_dir = (ent[i].attr & FS_ATTR_DIRECTORY) ? 1 : 0;
             }
             return 1;
         }
