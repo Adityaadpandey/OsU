@@ -69,24 +69,56 @@ static int dequeue_char(char *out) {
     return 1;
 }
 
+static uint8_t extended_key = 0;
+
 static void keyboard_irq_handler(registers_t *r) {
     (void)r;
     uint8_t scancode = inb(0x60);
 
+    /* Handle extended key prefix */
+    if (scancode == 0xE0) {
+        extended_key = 1;
+        return;
+    }
+
+    /* Handle shift keys */
     if (scancode == 0x2A || scancode == 0x36) {
         shift_down = 1;
+        extended_key = 0;
         return;
     }
     if (scancode == 0xAA || scancode == 0xB6) {
         shift_down = 0;
+        extended_key = 0;
         return;
     }
 
+    /* Ignore key releases */
     if (scancode & 0x80) {
+        extended_key = 0;
         return;
     }
 
-    char ch = shift_down ? map_shift[scancode] : map_normal[scancode];
+    char ch = 0;
+
+    if (extended_key) {
+        /* Extended key scancodes */
+        switch (scancode) {
+            case 0x48: ch = KEY_UP; break;      /* Up arrow */
+            case 0x50: ch = KEY_DOWN; break;    /* Down arrow */
+            case 0x4B: ch = KEY_LEFT; break;    /* Left arrow */
+            case 0x4D: ch = KEY_RIGHT; break;   /* Right arrow */
+            case 0x47: ch = KEY_HOME; break;    /* Home */
+            case 0x4F: ch = KEY_END; break;     /* End */
+            case 0x49: ch = KEY_PGUP; break;    /* Page Up */
+            case 0x51: ch = KEY_PGDN; break;    /* Page Down */
+            case 0x53: ch = KEY_DELETE; break;  /* Delete */
+        }
+        extended_key = 0;
+    } else {
+        ch = shift_down ? map_shift[scancode] : map_normal[scancode];
+    }
+
     if (ch) {
         enqueue_char(ch);
     }

@@ -205,6 +205,12 @@ int editor_edit_file(const char *name) {
                     msg = "file full";
                 }
             }
+            /* Allow arrow keys in insert mode too */
+            if ((unsigned char)c == KEY_LEFT && cursor > 0) {
+                cursor--;
+            } else if ((unsigned char)c == KEY_RIGHT && cursor < len) {
+                cursor++;
+            }
             continue;
         }
 
@@ -217,20 +223,20 @@ int editor_edit_file(const char *name) {
             }
         } else if (c == 'i') {
             mode = MODE_INSERT;
-        } else if (c == 'h') {
+        } else if (c == 'h' || (unsigned char)c == KEY_LEFT) {
             if (cursor > 0) {
                 cursor--;
             }
-        } else if (c == 'l') {
+        } else if (c == 'l' || (unsigned char)c == KEY_RIGHT) {
             if (cursor < len) {
                 cursor++;
             }
-        } else if (c == 'x') {
+        } else if (c == 'x' || (unsigned char)c == KEY_DELETE) {
             if (cursor < len) {
                 delete_at(text, &len, cursor);
                 dirty = 1;
             }
-        } else if (c == 'j') {
+        } else if (c == 'j' || (unsigned char)c == KEY_DOWN) {
             size_t col = cursor - line_start(text, cursor);
             size_t next_start = line_end(text, len, cursor);
             if (next_start < len && text[next_start] == '\n') {
@@ -239,7 +245,7 @@ int editor_edit_file(const char *name) {
                 size_t next_len = next_end - next_start;
                 cursor = next_start + (col < next_len ? col : next_len);
             }
-        } else if (c == 'k') {
+        } else if (c == 'k' || (unsigned char)c == KEY_UP) {
             size_t cur_start = line_start(text, cursor);
             if (cur_start > 0) {
                 size_t col = cursor - cur_start;
