@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 
+#include "gfxcon.h"
 #include "io.h"
 
 #define VGA_MEM ((volatile uint16_t *)0xB8000)
@@ -15,6 +16,7 @@ static inline uint16_t make_cell(char c, uint8_t col) {
 }
 
 static void update_cursor(void) {
+    if (gfxcon_active()) return;  /* No hardware cursor in graphics mode */
     uint16_t pos = (uint16_t)(cursor_y * VGA_WIDTH + cursor_x);
     outb(0x3D4, 0x0F);
     outb(0x3D5, (uint8_t)(pos & 0xFF));
@@ -46,6 +48,10 @@ void vga_init(void) {
 }
 
 void vga_clear(void) {
+    if (gfxcon_active()) {
+        gfxcon_clear();
+        return;
+    }
     for (size_t i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
         VGA_MEM[i] = make_cell(' ', color);
     }
@@ -56,9 +62,26 @@ void vga_clear(void) {
 
 void vga_set_color(vga_color_t fg, vga_color_t bg) {
     color = (uint8_t)(fg | (bg << 4));
+
+    /* Map VGA colors to RGB for graphics console */
+    if (gfxcon_active()) {
+        static const uint32_t vga_to_rgb[] = {
+            0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
+            0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
+            0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
+            0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
+        };
+        gfxcon_set_fg(vga_to_rgb[fg & 0xF]);
+        gfxcon_set_bg(vga_to_rgb[bg & 0xF]);
+    }
 }
 
 void vga_putc(char c) {
+    if (gfxcon_active()) {
+        gfxcon_putc(c);
+        return;
+    }
+
     if (c == '\n') {
         cursor_x = 0;
         cursor_y++;
@@ -83,6 +106,10 @@ void vga_putc(char c) {
 }
 
 void vga_puts(const char *str) {
+    if (gfxcon_active()) {
+        gfxcon_puts(str);
+        return;
+    }
     while (*str) {
         vga_putc(*str++);
     }
@@ -153,6 +180,10 @@ void vga_printf(const char *fmt, ...) {
 }
 
 void vga_set_cursor(uint8_t x, uint8_t y) {
+    if (gfxcon_active()) {
+        gfxcon_set_cursor(y, x);
+        return;
+    }
     if (x >= VGA_WIDTH) {
         x = VGA_WIDTH - 1;
     }

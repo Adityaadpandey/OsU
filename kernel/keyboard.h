@@ -18,5 +18,6 @@ void keyboard_init(void);
 char keyboard_getchar(void);
 void keyboard_readline(char *buf, size_t max_len);
 void keyboard_flush(void);
+int keyboard_try_getchar(char *out);
 
 #endif

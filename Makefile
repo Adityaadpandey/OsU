@@ -16,10 +16,10 @@ BOOT_DIR = boot
 KERNEL_DIR = kernel
 
 STAGE2_SECTORS = 16
-KERNEL_SECTORS = 128
+KERNEL_SECTORS = 256
 IMG_SECTORS = 32768
 
-KERNEL_ASM = $(KERNEL_DIR)/entry.asm $(KERNEL_DIR)/isr.asm
+KERNEL_ASM = $(KERNEL_DIR)/entry.asm $(KERNEL_DIR)/isr.asm $(KERNEL_DIR)/context.asm
 KERNEL_C = $(wildcard $(KERNEL_DIR)/*.c)
 
 KERNEL_ASM_OBJ = $(patsubst $(KERNEL_DIR)/%.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASM))

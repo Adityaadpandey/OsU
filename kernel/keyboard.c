@@ -7,6 +7,9 @@
 #include "vga.h"
 
 #define KBD_BUF_SIZE 256
+#define PS2_DATA_PORT 0x60
+#define PS2_STATUS_PORT 0x64
+#define PS2_CMD_PORT 0x64
 
 static volatile char kbd_buf[KBD_BUF_SIZE];
 static volatile uint32_t kbd_head;
@@ -71,9 +74,36 @@ static int dequeue_char(char *out) {
 
 static uint8_t extended_key = 0;
 
+static void ps2_wait_read(void) {
+    while ((inb(PS2_STATUS_PORT) & 0x01) == 0) {
+        /* wait */
+    }
+}
+
+static void ps2_wait_write(void) {
+    while (inb(PS2_STATUS_PORT) & 0x02) {
+        /* wait */
+    }
+}
+
+static void ps2_write_cmd(uint8_t cmd) {
+    ps2_wait_write();
+    outb(PS2_CMD_PORT, cmd);
+}
+
+static uint8_t ps2_read_data(void) {
+    ps2_wait_read();
+    return inb(PS2_DATA_PORT);
+}
+
+static void ps2_write_data(uint8_t val) {
+    ps2_wait_write();
+    outb(PS2_DATA_PORT, val);
+}
+
 static void keyboard_irq_handler(registers_t *r) {
     (void)r;
-    uint8_t scancode = inb(0x60);
+    uint8_t scancode = inb(PS2_DATA_PORT);
 
     /* Handle extended key prefix */
     if (scancode == 0xE0) {
@@ -130,6 +160,27 @@ void keyboard_init(void) {
     shift_down = 0;
     extended_key = 0;
     idt_register_handler(33, keyboard_irq_handler);
+
+    /* Ensure PS/2 keyboard is enabled and IRQ1 unmasked */
+    ps2_write_cmd(0xAE); /* Enable keyboard interface */
+    ps2_write_cmd(0x20); /* Read controller command byte */
+    uint8_t status = ps2_read_data();
+    status &= (uint8_t)~0x10; /* Clear keyboard disable */
+    status &= (uint8_t)~0x20; /* Clear mouse disable */
+    status |= 0x01;           /* Enable IRQ1 */
+    status &= (uint8_t)~0x40; /* Disable scancode translation */
+    ps2_write_cmd(0x60);      /* Write controller command byte */
+    ps2_write_data(status);
+
+    /* Force scancode set 1 for compatibility */
+    ps2_write_data(0xF0);
+    ps2_read_data();
+    ps2_write_data(0x01);
+    ps2_read_data();
+
+    /* Enable keyboard scanning */
+    ps2_write_data(0xF4);
+    ps2_read_data();
 }
 
 /* Flush any pending keyboard input */
@@ -179,4 +230,11 @@ void keyboard_readline(char *buf, size_t max_len) {
             vga_putc(c);
         }
     }
+}
+
+int keyboard_try_getchar(char *out) {
+    if (!out) {
+        return 0;
+    }
+    return dequeue_char(out);
 }

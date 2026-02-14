@@ -3,11 +3,17 @@
 #include <stdint.h>
 
 #include "editor.h"
+#include "gui.h"
 #include "io.h"
 #include "keyboard.h"
 #include "lang.h"
 #include "memory.h"
+#include "process.h"
 #include "string.h"
+#include "syscall.h"
+#include "timer.h"
+#include "v86.h"
+#include "vesa.h"
 #include "vfs.h"
 #include "vga.h"
 
@@ -99,7 +105,185 @@ static void cmd_help(void) {
     vga_puts("  cd DIR              change directory\n");
     vga_puts("  mkdir DIR           create directory\n");
     vga_puts("  rmdir DIR           remove empty directory\n");
+    vga_puts("  ps                  list processes\n");
+    vga_puts("  spawn NAME          spawn demo process\n");
+    vga_puts("  kill PID            kill process\n");
+    vga_puts("  usermode            test user mode syscalls\n");
+    vga_puts("  gui                 launch GUI demo\n");
+    vga_puts("  gfx                 alias for gui\n");
     vga_puts("  reboot              reboot machine\n");
+}
+
+/* User mode test program - uses syscalls */
+static void user_program(void) {
+    /* This will run in ring 3 and use int 0x80 for syscalls */
+    const char msg1[] = "Hello from user mode!\n";
+    const char msg2[] = "PID: ";
+
+    /* Write syscall: eax=1, ebx=fd, ecx=buf, edx=count */
+    __asm__ volatile(
+        "mov $1, %%eax\n\t"      /* SYS_WRITE */
+        "mov $1, %%ebx\n\t"      /* stdout */
+        "mov %0, %%ecx\n\t"      /* buffer */
+        "mov $22, %%edx\n\t"     /* length */
+        "int $0x80\n\t"
+        : : "r"(msg1) : "eax", "ebx", "ecx", "edx"
+    );
+
+    __asm__ volatile(
+        "mov $1, %%eax\n\t"
+        "mov $1, %%ebx\n\t"
+        "mov %0, %%ecx\n\t"
+        "mov $5, %%edx\n\t"
+        "int $0x80\n\t"
+        : : "r"(msg2) : "eax", "ebx", "ecx", "edx"
+    );
+
+    /* Get PID syscall: eax=3 */
+    int pid;
+    __asm__ volatile(
+        "mov $3, %%eax\n\t"      /* SYS_GETPID */
+        "int $0x80\n\t"
+        "mov %%eax, %0\n\t"
+        : "=r"(pid) : : "eax"
+    );
+
+    /* Print PID digit (simple for demo) */
+    char digit = '0' + (pid % 10);
+    __asm__ volatile(
+        "mov $1, %%eax\n\t"
+        "mov $1, %%ebx\n\t"
+        "mov %0, %%ecx\n\t"
+        "mov $1, %%edx\n\t"
+        "int $0x80\n\t"
+        : : "r"(&digit) : "eax", "ebx", "ecx", "edx"
+    );
+
+    /* Newline */
+    char nl = '\n';
+    __asm__ volatile(
+        "mov $1, %%eax\n\t"
+        "mov $1, %%ebx\n\t"
+        "mov %0, %%ecx\n\t"
+        "mov $1, %%edx\n\t"
+        "int $0x80\n\t"
+        : : "r"(&nl) : "eax", "ebx", "ecx", "edx"
+    );
+
+    /* Exit syscall: eax=0, ebx=status */
+    __asm__ volatile(
+        "mov $0, %%eax\n\t"      /* SYS_EXIT */
+        "mov $0, %%ebx\n\t"      /* status 0 */
+        "int $0x80\n\t"
+        : : : "eax", "ebx"
+    );
+}
+
+static void cmd_usermode(void) {
+    vga_puts("Entering user mode...\n");
+
+    /* Set up user stack */
+    static uint8_t user_stack[4096] __attribute__((aligned(16)));
+    uint32_t user_esp = (uint32_t)&user_stack[sizeof(user_stack) - 16];
+
+    /* Jump to user mode using iret */
+    /* Push: SS, ESP, EFLAGS, CS, EIP */
+    __asm__ volatile(
+        "mov $0x23, %%ax\n\t"    /* User data segment (0x20 | 3) */
+        "mov %%ax, %%ds\n\t"
+        "mov %%ax, %%es\n\t"
+        "mov %%ax, %%fs\n\t"
+        "mov %%ax, %%gs\n\t"
+
+        "push $0x23\n\t"         /* SS */
+        "push %0\n\t"            /* ESP */
+        "pushf\n\t"              /* EFLAGS */
+        "orl $0x200, (%%esp)\n\t" /* Enable interrupts */
+        "push $0x1B\n\t"         /* CS (0x18 | 3) */
+        "push %1\n\t"            /* EIP */
+        "iret\n\t"
+        : : "r"(user_esp), "r"((uint32_t)user_program)
+        : "eax"
+    );
+}
+
+/* Demo process: prints a counter */
+static void demo_counter(void) {
+    int count = 0;
+    while (count < 10) {
+        vga_puts("[counter] ");
+        vga_print_dec(count++);
+        vga_puts("\n");
+        timer_sleep(1000);  /* 1 second */
+    }
+    vga_puts("[counter] done!\n");
+}
+
+/* Demo process: spins showing activity */
+static void demo_spinner(void) {
+    const char spin[] = "|/-\\";
+    int i = 0;
+    while (i < 20) {
+        vga_puts("[spinner] ");
+        vga_putc(spin[i % 4]);
+        vga_puts("\n");
+        timer_sleep(250);  /* 250ms */
+        i++;
+    }
+    vga_puts("[spinner] done!\n");
+}
+
+static void cmd_spawn(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: spawn counter|spinner\n");
+        return;
+    }
+
+    int pid = -1;
+    if (strcmp(args, "counter") == 0) {
+        pid = process_create("counter", demo_counter);
+    } else if (strcmp(args, "spinner") == 0) {
+        pid = process_create("spinner", demo_spinner);
+    } else {
+        vga_puts("unknown process: ");
+        vga_puts(args);
+        vga_puts("\nAvailable: counter, spinner\n");
+        return;
+    }
+
+    if (pid > 0) {
+        vga_puts("spawned process pid=");
+        vga_print_dec(pid);
+        vga_puts("\n");
+        /* Enable scheduler if not already */
+        scheduler_init();
+    } else {
+        vga_puts("failed to spawn\n");
+    }
+}
+
+static void cmd_kill(char *args) {
+    if (*args == '\0') {
+        vga_puts("usage: kill PID\n");
+        return;
+    }
+    int pid = atoi(args);
+    if (process_kill(pid) == 0) {
+        vga_puts("killed\n");
+    } else {
+        vga_puts("process not found\n");
+    }
+}
+
+static void cmd_gui(void) {
+    if (!vesa_enabled) {
+        vga_puts("GUI requires VESA 800x600x32 mode.\n");
+        return;
+    }
+    gui_run();
+    keyboard_flush();
+    vga_clear();
+    vga_puts("Returned from GUI.\n");
 }
 
 static void cmd_mem(void) {
@@ -384,6 +568,18 @@ void shell_run(void) {
             cmd_run(args);
         } else if (strcmp(cmd, "pyrun") == 0) {
             cmd_pyrun(args);
+        } else if (strcmp(cmd, "ps") == 0) {
+            process_list();
+        } else if (strcmp(cmd, "spawn") == 0) {
+            cmd_spawn(args);
+        } else if (strcmp(cmd, "kill") == 0) {
+            cmd_kill(args);
+        } else if (strcmp(cmd, "gui") == 0) {
+            cmd_gui();
+        } else if (strcmp(cmd, "gfx") == 0) {
+            cmd_gui();
+        } else if (strcmp(cmd, "usermode") == 0) {
+            cmd_usermode();
         } else if (strcmp(cmd, "reboot") == 0) {
             cmd_reboot();
         } else {

@@ -52,6 +52,9 @@
 [GLOBAL irq14]
 [GLOBAL irq15]
 
+[GLOBAL isr128]  ; Syscall interrupt
+[GLOBAL tss_flush]
+
 %macro ISR_NOERR 1
 isr%1:
     push dword 0
@@ -121,6 +124,19 @@ IRQ 12, 44
 IRQ 13, 45
 IRQ 14, 46
 IRQ 15, 47
+
+; Syscall interrupt (int 0x80)
+isr128:
+    push dword 0
+    push dword 128
+    jmp isr_common_stub
+
+; Load TSS into TR register
+; TSS selector is at GDT index 5 = 0x28
+tss_flush:
+    mov ax, 0x28
+    ltr ax
+    ret
 
 isr_common_stub:
     push ds
